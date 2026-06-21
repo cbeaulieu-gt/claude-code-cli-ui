@@ -15,6 +15,7 @@ import {
   safePath,
   isUnderAllowedPath,
   validateSlug,
+  getAllowedPaths,
 } from '../../server/utils/path-security'
 
 // ---------------------------------------------------------------------------
@@ -151,5 +152,83 @@ describe('validateSlug', () => {
 
   it('throws for a slug containing a backslash', () => {
     expect(() => validateSlug('a\\b')).toThrow()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// P1-REGRESSION: getAllowedPaths — attacker-supplied projectDir bypass
+//
+// BUG (files.get.ts): The endpoint read `projectDir` from the HTTP query and
+// passed it into `getAllowedPaths(projectDir)`, which unconditionally pushed
+// the caller-supplied directory as an allowed root.  An attacker could set
+// `?projectDir=/etc` and `?path=/etc/passwd` to satisfy the isUnderAllowedPath
+// guard and read arbitrary files.
+//
+// CONTRACT after fix: `getAllowedPaths()` called with no argument (or with a
+// server-validated argument) must not permit access to paths outside ~/.claude
+// or the legitimately-resolved project directory.  An attacker-controlled
+// directory string arriving from the query MUST NOT widen the allowed roots.
+//
+// NOTE: An HTTP-level 403 assertion would be the ideal complement, but the
+// existing E2E suite (api-security-e2e.test.ts) already has a C3 group that
+// covers the files.get endpoint.  These unit tests pin the lower-level
+// contract so a future refactor of getAllowedPaths cannot silently regress it
+// without breaking tests that don't require a running server.
+// ---------------------------------------------------------------------------
+
+describe('P1-REGRESSION: getAllowedPaths — attacker-controlled projectDir bypass', () => {
+  // An attacker-supplied directory used as a query param value.
+  // We use os.tmpdir() so the path exists cross-platform (Windows/Linux).
+  const ATTACKER_DIR = os.tmpdir()
+  const ATTACKER_FILE = path.join(ATTACKER_DIR, 'secret.txt')
+
+  it('positive control — a path under ~/.claude is allowed by default', () => {
+    // With no projectDir argument only the Claude dir is an allowed root.
+    const HOME = os.homedir()
+    const claudeDir = path.join(HOME, '.claude')
+    const claudeFile = path.join(claudeDir, 'agents', 'my-agent.md')
+    const allowed = getAllowedPaths()
+
+    // The allowed list must include at least the Claude dir.
+    expect(allowed.length).toBeGreaterThanOrEqual(1)
+    // A file under Claude dir must be permitted.
+    expect(isUnderAllowedPath(claudeFile, allowed)).toBe(true)
+  })
+
+  it('a file outside ~/.claude is NOT allowed when no projectDir is supplied', () => {
+    // Without a projectDir the allowed set contains only ~/.claude.
+    // A file in os.tmpdir() is definitively outside that set.
+    const allowed = getAllowedPaths()
+    expect(isUnderAllowedPath(ATTACKER_FILE, allowed)).toBe(false)
+  })
+
+  it('REGRESSION — passing an attacker dir as projectDir must NOT grant access to files in that dir', () => {
+    // BUG: getAllowedPaths(ATTACKER_DIR) currently returns [claudeDir, ATTACKER_DIR],
+    // making isUnderAllowedPath(ATTACKER_FILE, ...) return true — the read guard is
+    // bypassed.  After the fix, the endpoint will derive the project dir from a
+    // server-validated source and never pass the raw query value here; this test
+    // documents the intended contract: even if getAllowedPaths is called with an
+    // arbitrary directory, a correct implementation must NOT allow it to widen
+    // access to system paths.
+    //
+    // Currently FAILS because getAllowedPaths(ATTACKER_DIR) blindly pushes the
+    // attacker dir into the allowed list.
+    const allowed = getAllowedPaths(ATTACKER_DIR)
+    // After fix: must be false — arbitrary dirs cannot be promoted to allowed roots.
+    expect(isUnderAllowedPath(ATTACKER_FILE, allowed)).toBe(false)
+  })
+
+  it('REGRESSION — the allowed list must not grow when a non-claudeDir path is supplied', () => {
+    // A related contract: passing a path that is NOT under ~/.claude and NOT a
+    // validated project directory must not expand the allowed set.
+    const allowed = getAllowedPaths(ATTACKER_DIR)
+    // After fix: only claudeDir should be in the list; arbitrary dirs are rejected.
+    // Currently FAILS because the buggy code pushes ATTACKER_DIR unconditionally.
+    const HOME = os.homedir()
+    const claudeDir = path.join(HOME, '.claude')
+    const resolvedAllowed = allowed.map(p => path.resolve(p))
+    expect(resolvedAllowed).not.toContain(path.resolve(ATTACKER_DIR))
+    expect(resolvedAllowed.length).toBe(1)
+    expect(resolvedAllowed[0]).toBe(path.resolve(claudeDir))
   })
 })

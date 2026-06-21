@@ -7,7 +7,6 @@ import { isUnderAllowedPath, getAllowedPaths } from '../utils/path-security'
 export default defineEventHandler(async (event) => {
   const query = getQuery(event)
   const path = query.path as string
-  const projectDir = query.projectDir as string
 
   if (!path) {
     throw createError({ statusCode: 400, message: 'Path is required' })
@@ -17,14 +16,14 @@ export default defineEventHandler(async (event) => {
   let fullPath: string
 
   if (!isAbsolute(path)) {
-    const baseDir = projectDir && existsSync(projectDir) ? projectDir : claudeDir
-    fullPath = resolve(join(baseDir, path))
+    // Relative paths resolve under the Claude dir only — no untrusted base
+    fullPath = resolve(join(claudeDir, path))
   } else {
     fullPath = resolve(path)
   }
 
-  // Security: restrict file access to allowed directories
-  if (!isUnderAllowedPath(fullPath, getAllowedPaths(projectDir))) {
+  // Security: restrict file access to allowed directories (claudeDir only)
+  if (!isUnderAllowedPath(fullPath, getAllowedPaths())) {
     throw createError({ statusCode: 403, message: 'Access denied: path outside allowed directory' })
   }
 

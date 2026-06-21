@@ -74,14 +74,10 @@ export function isUnderAllowedPath(targetPath: string, allowedBases: string[]): 
 
 /**
  * Get the list of allowed base directories for file access.
- * Includes ~/.claude and optionally a project directory.
+ * Returns only the Claude config directory — callers must NOT pass
+ * untrusted (user-supplied) paths; server-validated project dirs
+ * should be appended by the caller after validation.
  */
-export function getAllowedPaths(projectDir?: string): string[] {
-  const allowed = [getClaudeDir()]
-
-  if (projectDir) {
-    allowed.push(resolve(projectDir))
-  }
-
-  return allowed
+export function getAllowedPaths(): string[] {
+  return [getClaudeDir()]
 }

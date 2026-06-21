@@ -1,13 +1,13 @@
 import { marked } from 'marked'
-import DOMPurify from 'dompurify'
+import DOMPurify from 'isomorphic-dompurify'
 import { protectMathBlocks, restoreMathBlocks } from './messageFormatting'
 
 /**
  * Sanitize HTML output to prevent XSS.
+ * Uses isomorphic-dompurify so sanitization runs in both browser and SSR/Node.
  * Allows safe markdown-generated tags while stripping scripts and event handlers.
  */
 function sanitizeHtml(html: string): string {
-  if (typeof window === 'undefined') return html // SSR: no DOM available
   return DOMPurify.sanitize(html, {
     ADD_TAGS: ['math', 'mrow', 'mi', 'mo', 'mn', 'msup', 'msub', 'mfrac', 'munderover'],
     ADD_ATTR: ['data-lang', 'class', 'style'],

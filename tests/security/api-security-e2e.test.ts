@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { type ChildProcess, spawn } from 'node:child_process'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { mkdtempSync, rmSync } from 'node:fs'
 
 /**
  * E2E Security Tests
@@ -13,6 +14,7 @@ import { join } from 'node:path'
 const PORT = 3099
 const BASE = `http://localhost:${PORT}`
 let serverProcess: ChildProcess | null = null
+let isolatedClaudeDir: string | null = null
 
 async function waitForServer(url: string, timeoutMs = 60000): Promise<void> {
   const start = Date.now()
@@ -29,13 +31,21 @@ async function waitForServer(url: string, timeoutMs = 60000): Promise<void> {
 }
 
 beforeAll(async () => {
+  // Create a throwaway CLAUDE_DIR so MCP-import tests don't mutate the
+  // developer's real ~/.claude config (finding 3 isolation fix).
+  isolatedClaudeDir = mkdtempSync(join(tmpdir(), 'test-claude-'))
+
   // shell: true is required on Windows where `npx` resolves to `npx.cmd`
   // and a bare spawn('npx', ...) throws ENOENT without a shell intermediary.
   serverProcess = spawn('npx', ['nuxi', 'dev', '--port', String(PORT)], {
     cwd: process.cwd(),
     stdio: 'pipe',
     shell: true,
-    env: { ...process.env, NODE_ENV: 'development' },
+    env: {
+      ...process.env,
+      NODE_ENV: 'development',
+      CLAUDE_DIR: isolatedClaudeDir,
+    },
   })
 
   // Log server output for debugging
@@ -51,6 +61,14 @@ afterAll(() => {
   if (serverProcess) {
     serverProcess.kill('SIGTERM')
     serverProcess = null
+  }
+  if (isolatedClaudeDir) {
+    try {
+      rmSync(isolatedClaudeDir, { recursive: true, force: true })
+    } catch {
+      // best-effort cleanup
+    }
+    isolatedClaudeDir = null
   }
 })
 

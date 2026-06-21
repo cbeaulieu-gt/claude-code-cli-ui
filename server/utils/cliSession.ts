@@ -437,12 +437,12 @@ export function updateSessionCost(sessionId: string, cost: number): void {
 }
 
 // Cleanup all sessions on server shutdown (SIGTERM/SIGINT for real signal handling)
-function cleanupAllSessions() {
-  for (const sessionId of sessions.keys()) {
-    terminateSession(sessionId).catch(console.error)
-  }
+async function cleanupAllSessions(): Promise<void> {
+  await Promise.allSettled(
+    [...sessions.keys()].map((sessionId) => terminateSession(sessionId))
+  )
 }
 
 process.on('beforeExit', cleanupAllSessions)
-process.on('SIGTERM', () => { cleanupAllSessions(); process.exit(0) })
-process.on('SIGINT', () => { cleanupAllSessions(); process.exit(0) })
+process.on('SIGTERM', async () => { await cleanupAllSessions(); process.exit(0) })
+process.on('SIGINT', async () => { await cleanupAllSessions(); process.exit(0) })
