@@ -1,6 +1,18 @@
-import { resolve, join, normalize } from 'node:path'
+import { resolve, join, normalize, relative, sep, isAbsolute } from 'node:path'
 import { homedir } from 'node:os'
 import { getClaudeDir } from './claudeDir'
+
+/**
+ * Returns true if resolvedFull is at or inside resolvedBase.
+ * Uses path.relative() to avoid the Windows-separator bug from startsWith('/')
+ * and to correctly reject shared-prefix siblings (e.g. /a/baseX vs /a/base).
+ */
+function isContained(resolvedBase: string, resolvedFull: string): boolean {
+  const rel = relative(resolvedBase, resolvedFull)
+  // '' means resolvedFull === resolvedBase (the base itself)
+  // A safe child has a rel that is not absolute and doesn't start with '..'
+  return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith('..' + sep))
+}
 
 /**
  * Resolve a path and verify it stays within the allowed base directory.
@@ -11,7 +23,7 @@ export function safePath(base: string, ...segments: string[]): string {
   const resolvedBase = resolve(base)
   const resolvedFull = resolve(resolvedBase, ...segments)
 
-  if (!resolvedFull.startsWith(resolvedBase + '/') && resolvedFull !== resolvedBase) {
+  if (!isContained(resolvedBase, resolvedFull)) {
     throw createError({
       statusCode: 403,
       message: 'Access denied: path outside allowed directory',
@@ -57,10 +69,7 @@ export function validateSlug(slug: string): void {
  */
 export function isUnderAllowedPath(targetPath: string, allowedBases: string[]): boolean {
   const resolved = resolve(targetPath)
-  return allowedBases.some((base) => {
-    const resolvedBase = resolve(base)
-    return resolved === resolvedBase || resolved.startsWith(resolvedBase + '/')
-  })
+  return allowedBases.some((base) => isContained(resolve(base), resolved))
 }
 
 /**

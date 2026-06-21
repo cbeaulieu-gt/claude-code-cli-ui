@@ -1,81 +1,155 @@
+/**
+ * Tests for server/utils/path-security.ts
+ *
+ * All paths are built cross-platform using os.tmpdir() / os.homedir() and
+ * path.join / path.resolve so the suite runs correctly on both Windows and
+ * Linux without any hardcoded separator literals.
+ *
+ * `createError` is stubbed in tests/setup.ts (referenced from vitest.config.ts)
+ * so the production module can be imported without a Nuxt runtime context.
+ */
 import { describe, it, expect } from 'vitest'
-import { resolve } from 'node:path'
-import { homedir } from 'node:os'
+import * as path from 'node:path'
+import * as os from 'node:os'
+import {
+  safePath,
+  isUnderAllowedPath,
+  validateSlug,
+} from '../../server/utils/path-security'
 
-// Direct import of the utility functions (no Nuxt auto-imports needed)
-// We test the core logic by reimplementing the pure functions here
-// to avoid Nuxt server context dependency (createError)
+// ---------------------------------------------------------------------------
+// Cross-platform base paths derived from the OS at runtime
+// ---------------------------------------------------------------------------
 
-/** Reimplementation of safePath for testing — throws plain Error instead of createError */
-function safePath(base: string, ...segments: string[]): string {
-  const resolvedBase = resolve(base)
-  const resolvedFull = resolve(resolvedBase, ...segments)
-  if (!resolvedFull.startsWith(resolvedBase + '/') && resolvedFull !== resolvedBase) {
-    throw new Error('Access denied: path outside allowed directory')
-  }
-  return resolvedFull
-}
+/** A stable temp-based directory that is guaranteed to exist on every OS. */
+const TMP = os.tmpdir()
 
-function isUnderAllowedPath(targetPath: string, allowedBases: string[]): boolean {
-  const resolved = resolve(targetPath)
-  return allowedBases.some((base) => {
-    const resolvedBase = resolve(base)
-    return resolved === resolvedBase || resolved.startsWith(resolvedBase + '/')
-  })
-}
+/** A base directory name used in containment tests. */
+const BASE = path.join(TMP, 'test-base')
+
+/** A sibling with a shared prefix — must NOT be treated as "inside" BASE. */
+const BASE_EVIL = path.join(TMP, 'test-base-evil')
+
+/** Home directory for isUnderAllowedPath fixture. */
+const HOME = os.homedir()
+
+const ALLOWED_BASES = [
+  path.join(HOME, '.claude'),
+  path.join(HOME, 'projects'),
+]
+
+// ---------------------------------------------------------------------------
+// safePath
+// ---------------------------------------------------------------------------
 
 describe('safePath', () => {
-  const base = '/tmp/test-base'
-
-  it('allows paths within base directory', () => {
-    expect(safePath(base, 'file.txt')).toBe(`${base}/file.txt`)
-    expect(safePath(base, 'sub', 'dir', 'file.md')).toBe(`${base}/sub/dir/file.md`)
+  it('returns the resolved path when a single segment is inside the base', () => {
+    const result = safePath(BASE, 'file.txt')
+    expect(result).toBe(path.resolve(BASE, 'file.txt'))
   })
 
-  it('allows base directory itself', () => {
-    expect(safePath(base)).toBe(base)
+  it('returns the resolved path for nested segments inside the base', () => {
+    const result = safePath(BASE, 'sub', 'dir', 'file.md')
+    expect(result).toBe(path.resolve(BASE, 'sub', 'dir', 'file.md'))
   })
 
-  it('blocks path traversal with ..', () => {
-    expect(() => safePath(base, '..', 'etc', 'passwd')).toThrow('Access denied')
-    expect(() => safePath(base, 'sub', '..', '..', 'escape')).toThrow('Access denied')
+  it('allows the base directory itself (no segments)', () => {
+    const result = safePath(BASE)
+    expect(result).toBe(path.resolve(BASE))
   })
 
-  it('blocks absolute path escape via segments', () => {
-    // resolve('/tmp/test-base', '/etc/passwd') = '/etc/passwd'
-    expect(() => safePath(base, '/etc/passwd')).toThrow('Access denied')
+  it('allows a nested .. that resolves back inside the base', () => {
+    // BASE/sub/../file.txt resolves to BASE/file.txt — still inside the base
+    const result = safePath(BASE, 'sub', '..', 'file.txt')
+    expect(result).toBe(path.resolve(BASE, 'file.txt'))
   })
 
-  it('blocks traversal disguised with valid prefix', () => {
-    expect(() => safePath(base, '..', 'test-base-evil', 'file')).toThrow('Access denied')
+  it('throws for a .. traversal that escapes the base', () => {
+    // BASE/../etc/passwd resolves above BASE
+    expect(() => safePath(BASE, '..', 'etc', 'passwd')).toThrow('Access denied')
   })
 
-  it('handles nested .. that resolves back inside base', () => {
-    // /tmp/test-base/sub/../file.txt resolves to /tmp/test-base/file.txt — still inside base
-    expect(safePath(base, 'sub', '..', 'file.txt')).toBe(`${base}/file.txt`)
+  it('throws for a double-.. traversal that escapes the base', () => {
+    // BASE/sub/../../escape resolves two levels above BASE
+    expect(() => safePath(BASE, 'sub', '..', '..', 'escape')).toThrow('Access denied')
+  })
+
+  it('throws when an absolute segment outside the base is supplied', () => {
+    // path.resolve(BASE, absoluteOutsidePath) = absoluteOutsidePath on every OS
+    const outside = path.join(TMP, 'etc', 'passwd')
+    expect(() => safePath(BASE, outside)).toThrow('Access denied')
+  })
+
+  it('throws for a sibling directory with a shared prefix (prefix-confusion attack)', () => {
+    // BASE_EVIL shares the prefix "test-base" with BASE but is not inside it
+    expect(() => safePath(BASE, '..', 'test-base-evil', 'file')).toThrow('Access denied')
   })
 })
 
+// ---------------------------------------------------------------------------
+// isUnderAllowedPath
+// ---------------------------------------------------------------------------
+
 describe('isUnderAllowedPath', () => {
-  const allowed = ['/home/user/.claude', '/home/user/projects']
-
-  it('allows paths within allowed directories', () => {
-    expect(isUnderAllowedPath('/home/user/.claude/agents/test.md', allowed)).toBe(true)
-    expect(isUnderAllowedPath('/home/user/projects/src/index.ts', allowed)).toBe(true)
+  it('returns true for a path nested inside the first allowed base', () => {
+    const target = path.join(HOME, '.claude', 'agents', 'test.md')
+    expect(isUnderAllowedPath(target, ALLOWED_BASES)).toBe(true)
   })
 
-  it('allows exact allowed directory', () => {
-    expect(isUnderAllowedPath('/home/user/.claude', allowed)).toBe(true)
+  it('returns true for a path nested inside the second allowed base', () => {
+    const target = path.join(HOME, 'projects', 'src', 'index.ts')
+    expect(isUnderAllowedPath(target, ALLOWED_BASES)).toBe(true)
   })
 
-  it('blocks paths outside allowed directories', () => {
-    expect(isUnderAllowedPath('/etc/passwd', allowed)).toBe(false)
-    expect(isUnderAllowedPath('/home/user/.ssh/id_rsa', allowed)).toBe(false)
-    expect(isUnderAllowedPath('/home/user/.claude-evil/attack', allowed)).toBe(false)
+  it('returns true for a path that exactly equals an allowed base', () => {
+    const target = path.join(HOME, '.claude')
+    expect(isUnderAllowedPath(target, ALLOWED_BASES)).toBe(true)
   })
 
-  it('blocks paths that share a prefix but are not under allowed', () => {
-    // /home/user/.claudeX is NOT under /home/user/.claude
-    expect(isUnderAllowedPath('/home/user/.claudeX/file', allowed)).toBe(false)
+  it('returns false for a path in a wholly unrelated directory', () => {
+    // Use a TMP sub-path that is clearly not under HOME/.claude or HOME/projects
+    const target = path.join(TMP, 'etc', 'passwd')
+    expect(isUnderAllowedPath(target, ALLOWED_BASES)).toBe(false)
+  })
+
+  it('returns false for a hidden sibling of an allowed base (.ssh vs .claude)', () => {
+    const target = path.join(HOME, '.ssh', 'id_rsa')
+    expect(isUnderAllowedPath(target, ALLOWED_BASES)).toBe(false)
+  })
+
+  it('returns false for a path that shares a prefix but is not under an allowed base (prefix-confusion)', () => {
+    // HOME/.claudeX is NOT under HOME/.claude — must not be treated as inside
+    const target = path.join(HOME, '.claudeX', 'file')
+    expect(isUnderAllowedPath(target, ALLOWED_BASES)).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// validateSlug
+// ---------------------------------------------------------------------------
+
+describe('validateSlug', () => {
+  it('accepts a simple alphanumeric slug', () => {
+    expect(() => validateSlug('my-agent')).not.toThrow()
+  })
+
+  it('accepts slugs with underscores and hyphens', () => {
+    expect(() => validateSlug('my_agent-v2')).not.toThrow()
+  })
+
+  it('throws for an empty slug', () => {
+    expect(() => validateSlug('')).toThrow()
+  })
+
+  it('throws for a slug containing path-traversal characters', () => {
+    expect(() => validateSlug('../etc/passwd')).toThrow()
+  })
+
+  it('throws for a slug containing a forward slash', () => {
+    expect(() => validateSlug('a/b')).toThrow()
+  })
+
+  it('throws for a slug containing a backslash', () => {
+    expect(() => validateSlug('a\\b')).toThrow()
   })
 })

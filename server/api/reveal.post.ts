@@ -16,16 +16,17 @@ export default defineEventHandler(async (event) => {
   // Resolve to absolute path
   const resolvedPath = resolve(rawPath)
 
+  // Security check first — always 403 for out-of-bounds paths regardless of existence
+  // (prevents path enumeration: attackers must not distinguish "forbidden" from "not found")
+  if (!isUnderAllowedPath(resolvedPath, getAllowedPaths())) {
+    throw createError({ statusCode: 403, message: 'Access denied: path outside allowed directory' })
+  }
+
   // If it's a file, open the containing directory
   const targetPath = existsSync(resolvedPath) ? dirname(resolvedPath) : resolvedPath
 
   if (!existsSync(targetPath)) {
     throw createError({ statusCode: 404, message: 'Path not found' })
-  }
-
-  // Security: restrict to allowed directories
-  if (!isUnderAllowedPath(targetPath, getAllowedPaths())) {
-    throw createError({ statusCode: 403, message: 'Access denied: path outside allowed directory' })
   }
 
   // Use execFile (no shell) to prevent command injection

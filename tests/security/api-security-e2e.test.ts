@@ -29,9 +29,12 @@ async function waitForServer(url: string, timeoutMs = 60000): Promise<void> {
 }
 
 beforeAll(async () => {
+  // shell: true is required on Windows where `npx` resolves to `npx.cmd`
+  // and a bare spawn('npx', ...) throws ENOENT without a shell intermediary.
   serverProcess = spawn('npx', ['nuxi', 'dev', '--port', String(PORT)], {
     cwd: process.cwd(),
     stdio: 'pipe',
+    shell: true,
     env: { ...process.env, NODE_ENV: 'development' },
   })
 
