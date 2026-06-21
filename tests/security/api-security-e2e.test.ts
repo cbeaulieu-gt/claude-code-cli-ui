@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { type ChildProcess, spawn } from 'node:child_process'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 
 /**
  * E2E Security Tests
@@ -15,6 +15,9 @@ const PORT = 3099
 const BASE = `http://localhost:${PORT}`
 let serverProcess: ChildProcess | null = null
 let isolatedClaudeDir: string | null = null
+/** A file written into isolatedClaudeDir during setup — used as the positive-control read target. */
+let isolatedTestFilePath: string | null = null
+const ISOLATED_TEST_FILE_CONTENT = 'e2e-positive-control-sentinel'
 
 async function waitForServer(url: string, timeoutMs = 60000): Promise<void> {
   const start = Date.now()
@@ -34,6 +37,12 @@ beforeAll(async () => {
   // Create a throwaway CLAUDE_DIR so MCP-import tests don't mutate the
   // developer's real ~/.claude config (finding 3 isolation fix).
   isolatedClaudeDir = mkdtempSync(join(tmpdir(), 'test-claude-'))
+
+  // Write a known file into the isolated dir so the positive-control test can
+  // read it via /api/files without relying on the real ~/.claude/settings.json,
+  // which now 403s when the server authorises only the isolated CLAUDE_DIR + homedir.
+  isolatedTestFilePath = join(isolatedClaudeDir, 'e2e-probe.txt')
+  writeFileSync(isolatedTestFilePath, ISOLATED_TEST_FILE_CONTENT, 'utf8')
 
   // shell: true is required on Windows where `npx` resolves to `npx.cmd`
   // and a bare spawn('npx', ...) throws ENOENT without a shell intermediary.
@@ -126,11 +135,20 @@ describe('C3: files.get.ts — arbitrary file read', () => {
     expect(res.status).toBe(403)
   })
 
-  it('allows reading files inside ~/.claude', async () => {
-    // This should return 200 or 404 (file may not exist) — NOT 403
-    const claudeFile = join(homedir(), '.claude', 'settings.json')
-    const res = await fetch(`${BASE}/api/files?path=${encodeURIComponent(claudeFile)}`)
+  it('allows reading a file inside the isolated CLAUDE_DIR', async () => {
+    // Positive control: a file we wrote into the server's CLAUDE_DIR must return
+    // 200 — NOT 403.  We target isolatedTestFilePath (created in beforeAll) so the
+    // assertion is independent of the developer's real ~/.claude contents and is
+    // not affected by the server now authorising only isolatedClaudeDir + homedir.
+    const target = isolatedTestFilePath!
+    const res = await fetch(`${BASE}/api/files?path=${encodeURIComponent(target)}`)
     expect(res.status).not.toBe(403)
+    // If the endpoint returns the file body, confirm it contains our sentinel.
+    if (res.status === 200) {
+      const body = await res.json()
+      const content: string = body.content ?? body.data ?? ''
+      expect(content).toContain(ISOLATED_TEST_FILE_CONTENT)
+    }
   })
 })
 

@@ -1,13 +1,7 @@
 import { readdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { homedir } from 'node:os'
-import { isUnderAllowedPath } from '../utils/path-security'
-import { getClaudeDir } from '../utils/claudeDir'
-
-// Directories allowed for browsing: home dir and claude config
-function getBrowsableRoots(): string[] {
-  return [homedir(), getClaudeDir()]
-}
+import { isUnderAllowedPath, getBrowsableRoots } from '../utils/path-security'
 
 export default defineEventHandler((event) => {
   const query = getQuery(event)

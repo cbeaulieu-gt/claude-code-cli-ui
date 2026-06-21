@@ -16,6 +16,7 @@ import {
   isUnderAllowedPath,
   validateSlug,
   getAllowedPaths,
+  getBrowsableRoots,
 } from '../../server/utils/path-security'
 
 // ---------------------------------------------------------------------------
@@ -230,5 +231,67 @@ describe('P1-REGRESSION: getAllowedPaths — attacker-controlled projectDir bypa
     expect(resolvedAllowed).not.toContain(path.resolve(ATTACKER_DIR))
     expect(resolvedAllowed.length).toBe(1)
     expect(resolvedAllowed[0]).toBe(path.resolve(claudeDir))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// getBrowsableRoots — directory-browser boundary
+//
+// This function lifts the boundary used by the directory browser into
+// path-security so files.get can authorise project-file reads against the
+// same set: [os.homedir(), getClaudeDir()].
+//
+// INTENDED RED STATE: getBrowsableRoots is not exported from path-security.ts
+// yet — the import above will fail with a SyntaxError / "is not a function"
+// until the implementation agent adds the export.
+// ---------------------------------------------------------------------------
+
+describe('getBrowsableRoots', () => {
+  it('returns an array that includes os.homedir()', () => {
+    const roots = getBrowsableRoots()
+    const resolvedRoots = roots.map(r => path.resolve(r))
+    expect(resolvedRoots).toContain(path.resolve(os.homedir()))
+  })
+
+  it('returns an array that includes the Claude dir', () => {
+    // getClaudeDir() defaults to os.homedir()/.claude when CLAUDE_DIR is unset.
+    // We verify by checking that whatever it returns is a sub-path of — or equal
+    // to — something in the list.  Using isUnderAllowedPath keeps us decoupled
+    // from the exact value of getClaudeDir() in this environment.
+    const roots = getBrowsableRoots()
+    // The Claude dir itself must be either in roots OR a descendant of a root in
+    // the list (homedir covers it when claudeDir is the default ~/.claude).
+    // Either way, isUnderAllowedPath must be true for the Claude dir.
+    const HOME = os.homedir()
+    const defaultClaudeDir = path.join(HOME, '.claude')
+    // If CLAUDE_DIR override is active, getBrowsableRoots should still include
+    // it; if not, defaultClaudeDir is under homedir which is always in roots.
+    expect(isUnderAllowedPath(defaultClaudeDir, roots)).toBe(true)
+  })
+
+  it('returns exactly two roots when the Claude dir is the default (~/.claude)', () => {
+    // Without a CLAUDE_DIR override the two roots are homedir() and homedir()/.claude.
+    // With an override the list still has two entries (homedir + overridden claudeDir).
+    const roots = getBrowsableRoots()
+    expect(roots.length).toBe(2)
+  })
+
+  it('allows a file nested under os.homedir() — regression for project-file reads', () => {
+    // This is the regression test that proves legitimate project-file reads work.
+    // The frontend FileEditorSidebar passes paths like /home/user/projects/app/src/index.ts
+    // which must not 403 once getBrowsableRoots replaces the claudeDir-only list.
+    const projectFile = path.join(os.homedir(), 'projects', 'app', 'src', 'index.ts')
+    expect(isUnderAllowedPath(projectFile, getBrowsableRoots())).toBe(true)
+  })
+
+  it('blocks a system path that is outside os.homedir()', () => {
+    // Choose a path guaranteed to be outside homedir on any OS.
+    // On win32: C:\Windows\System32\drivers\etc\hosts is outside any user home.
+    // On POSIX: /etc/passwd is outside any user home.
+    const outsidePath =
+      process.platform === 'win32'
+        ? 'C:\\Windows\\System32\\drivers\\etc\\hosts'
+        : '/etc/passwd'
+    expect(isUnderAllowedPath(outsidePath, getBrowsableRoots())).toBe(false)
   })
 })

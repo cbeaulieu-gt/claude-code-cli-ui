@@ -77,7 +77,20 @@ export function isUnderAllowedPath(targetPath: string, allowedBases: string[]): 
  * Returns only the Claude config directory — callers must NOT pass
  * untrusted (user-supplied) paths; server-validated project dirs
  * should be appended by the caller after validation.
+ *
+ * The optional argument is intentionally ignored: an attacker-controlled
+ * directory arriving from an HTTP query must NOT widen the allowed set.
  */
-export function getAllowedPaths(): string[] {
+export function getAllowedPaths(_ignored?: string): string[] {
   return [getClaudeDir()]
+}
+
+/**
+ * Get the list of base directories allowed for browsing/reading project files.
+ * Wider than getAllowedPaths: includes the user's home directory so the
+ * FileEditorSidebar can read project files under ~/projects, etc.
+ * Used by files.get and directories.get; reveal.post uses getAllowedPaths.
+ */
+export function getBrowsableRoots(): string[] {
+  return [homedir(), getClaudeDir()]
 }
