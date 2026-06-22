@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { type ChildProcess, spawn } from 'node:child_process'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 
 /**
  * E2E Security Tests
@@ -303,6 +303,46 @@ describe('C7: mcp/import.post.ts — config injection', () => {
       }),
     })
     expect(res.status).toBe(200)
+  })
+
+  it('preserves disabled: true through import', async () => {
+    const serverName = 'test-disabled-preserve'
+    const res = await fetch(`${BASE}/api/mcp/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: JSON.stringify({
+          mcpServers: {
+            [serverName]: { command: 'node', args: ['server.js'], disabled: true },
+          },
+        }),
+      }),
+    })
+    // Import must succeed
+    expect(res.status).toBe(200)
+
+    // Read the written .claude.json and verify disabled: true survived
+    const claudeJsonPath = join(homedir(), '.claude.json')
+    expect(existsSync(claudeJsonPath)).toBe(true)
+    const written = JSON.parse(readFileSync(claudeJsonPath, 'utf-8'))
+    const importedServer = written?.mcpServers?.[serverName]
+    expect(importedServer).toBeDefined()
+    expect(importedServer.disabled).toBe(true)
+  })
+
+  it('rejects disabled flag that is not a boolean', async () => {
+    const res = await fetch(`${BASE}/api/mcp/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: JSON.stringify({
+          mcpServers: {
+            'test-bad-disabled': { command: 'node', args: ['server.js'], disabled: 'yes' },
+          },
+        }),
+      }),
+    })
+    expect(res.status).toBe(400)
   })
 })
 

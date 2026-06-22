@@ -72,8 +72,13 @@ export default defineEventHandler(async (event) => {
       }
     }
 
+    // Validate disabled flag is a boolean if present
+    if (cfg.disabled !== undefined && typeof cfg.disabled !== 'boolean') {
+      throw createError({ statusCode: 400, message: `Server "${name}" disabled flag must be a boolean` })
+    }
+
     // Strip any unexpected fields — only allow known MCP config keys
-    const allowedKeys = new Set(['command', 'args', 'env', 'url', 'type', 'headers'])
+    const allowedKeys = new Set(['command', 'args', 'env', 'url', 'type', 'headers', 'disabled'])
     for (const key of Object.keys(cfg)) {
       if (!allowedKeys.has(key)) {
         delete cfg[key]
