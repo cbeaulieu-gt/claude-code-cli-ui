@@ -1,39 +1,49 @@
-import { exec } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { dirname } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { existsSync } from 'node:fs'
+import { isUnderAllowedPath, getAllowedPaths } from '../utils/path-security'
 
-const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
 
 export default defineEventHandler(async (event) => {
-  const { path } = await readBody<{ path: string }>(event)
+  const { path: rawPath } = await readBody<{ path: string }>(event)
 
-  if (!path) {
+  if (!rawPath) {
     throw createError({ statusCode: 400, message: 'Path is required' })
   }
 
+  // Resolve to absolute path
+  const resolvedPath = resolve(rawPath)
+
+  // Security check first — always 403 for out-of-bounds paths regardless of existence
+  // (prevents path enumeration: attackers must not distinguish "forbidden" from "not found")
+  if (!isUnderAllowedPath(resolvedPath, getAllowedPaths())) {
+    throw createError({ statusCode: 403, message: 'Access denied: path outside allowed directory' })
+  }
+
   // If it's a file, open the containing directory
-  const targetPath = existsSync(path) ? dirname(path) : path
+  const targetPath = existsSync(resolvedPath) ? dirname(resolvedPath) : resolvedPath
 
   if (!existsSync(targetPath)) {
     throw createError({ statusCode: 404, message: 'Path not found' })
   }
 
+  // Use execFile (no shell) to prevent command injection
   const platform = process.platform
-  let command = ''
-
+  let command: string
   if (platform === 'darwin') {
-    command = `open "${targetPath}"`
+    command = 'open'
   } else if (platform === 'win32') {
-    command = `explorer "${targetPath}"`
+    command = 'explorer'
   } else {
-    command = `xdg-open "${targetPath}"`
+    command = 'xdg-open'
   }
 
   try {
-    await execAsync(command)
+    await execFileAsync(command, [targetPath])
     return { success: true }
   } catch (err: any) {
-    throw createError({ statusCode: 500, message: `Failed to open directory: ${err.message}` })
+    throw createError({ statusCode: 500, message: 'Failed to open directory' })
   }
 })
